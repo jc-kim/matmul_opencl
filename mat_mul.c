@@ -25,6 +25,7 @@ const char* kernel_source = "__kernel void matmul(__global const float* A, "
                             "  int j = get_global_id(1);"
                             "  int k;"
                             "  float acc = 0.0f;"
+                            "  if( i >= size || j >= size ) return;"
                             "  for( k = 0; k < size; k++ ) {"
                             "    acc += A[i * size + k] * B[k * size + j];"
                             "  }"
@@ -223,7 +224,7 @@ int main(int argc, char** argv)
 	error = clEnqueueWriteBuffer(command_queue, buffer_b, CL_FALSE, 0, mem_size, (void*)b, 0, NULL, NULL);
 	check_error(error, __LINE__);
 
-	size_t global[2] = { NDIM, NDIM };
+	size_t global[2] = { NDIM + ((4 - (NDIM % 4)) % 4), NDIM + ((4 - (NDIM % 4)) % 4) };
 	size_t local[2] = { 4, 4 };
 
 	error = clEnqueueNDRangeKernel(command_queue, kernel, 2, NULL, global, local, 0, NULL, NULL);
