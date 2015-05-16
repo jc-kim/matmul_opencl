@@ -20,16 +20,20 @@ int is_gpu = 0;
 const char* kernel_source = "__kernel void matmul(__global const float* A, "
                             "__global const float* B, "
                             "__global float* C, "
-                            "int size) {"
+                            "int size,"
+                            "int start_row) {"
                             "  int i = get_global_id(0);"
-                            "  int j = get_global_id(1);"
-                            "  int k;"
-                            "  float acc = 0.0f;"
-                            "  if( i >= size || j >= size ) return;"
-                            "  for( k = 0; k < size; k++ ) {"
-                            "    acc += A[i * size + k] * B[k * size + j];"
+                            "  int j, k;"
+                            "  int c_offset = (start_row + i) * size;"
+                            "  float acc;"
+                            "  if( i + start_row >= size ) return;"
+                            "  for( j = 0; j < size; j++ ) {"
+                            "    acc = 0.0f;"
+                            "    for( k = 0; k < size; k++ ) {"
+                            "      acc += A[i * size + k] * B[k * size + j];"
+                            "    }"
+                            "    C[c_offset + j] = acc;"
                             "  }"
-                            "  C[i * size + j] = acc;"
                             "}";
 
 /************************** DO NOT TOUCH BELOW HERE ******************************/
@@ -201,34 +205,39 @@ int main(int argc, char** argv)
 	cl_kernel kernel = clCreateKernel(program, "matmul", &error);
 	check_error(error, __LINE__);
 
-	cl_mem buffer_a = clCreateBuffer(context, CL_MEM_READ_ONLY, mem_size, NULL, &error);
+	size_t one_line_size = sizeof(float) * NDIM;
+	size_t global[1] = { 4 };
+	size_t local[1] = { 4 };
+	cl_mem buffer_a = clCreateBuffer(context, CL_MEM_READ_ONLY, one_line_size * 4, NULL, &error);
 	check_error(error, __LINE__);
 	cl_mem buffer_b = clCreateBuffer(context, CL_MEM_READ_ONLY, mem_size, NULL, &error);
 	check_error(error, __LINE__);
 	cl_mem buffer_c = clCreateBuffer(context, CL_MEM_WRITE_ONLY, mem_size, NULL, &error);
 	check_error(error, __LINE__);
+	int idx;
+	for( idx = 0; idx < NDIM; idx += 4 ) {
+		// enqueue buffer
+		error = clEnqueueWriteBuffer(command_queue, buffer_a, CL_TRUE, 0, one_line_size * 4, (void*)(&a[NDIM * idx]), 0, NULL, NULL);
+		check_error(error, __LINE__);
+		error = clEnqueueWriteBuffer(command_queue, buffer_b, CL_TRUE, 0, mem_size, (void*)b, 0, NULL, NULL);
+		check_error(error, __LINE__);
 
-	// argument 주입
-	error = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&buffer_a);
-	check_error(error, __LINE__);
-	error = clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*)&buffer_b);
-	check_error(error, __LINE__);
-	error = clSetKernelArg(kernel, 2, sizeof(cl_mem), (void*)&buffer_c);
-	check_error(error, __LINE__);
-	error = clSetKernelArg(kernel, 3, sizeof(cl_int), (void*)&NDIM);
-	check_error(error, __LINE__);
+		// argument 주입
+		error = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&buffer_a);
+		check_error(error, __LINE__);
+		error = clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*)&buffer_b);
+		check_error(error, __LINE__);
+		error = clSetKernelArg(kernel, 2, sizeof(cl_mem), (void*)&buffer_c);
+		check_error(error, __LINE__);
+		error = clSetKernelArg(kernel, 3, sizeof(cl_int), (void*)&NDIM);
+		check_error(error, __LINE__);
+		error = clSetKernelArg(kernel, 4, sizeof(cl_int), (void*)&idx);
+		check_error(error, __LINE__);
 
-	// enqueue
-	error = clEnqueueWriteBuffer(command_queue, buffer_a, CL_FALSE, 0, mem_size, (void*)a, 0, NULL, NULL);
-	check_error(error, __LINE__);
-	error = clEnqueueWriteBuffer(command_queue, buffer_b, CL_FALSE, 0, mem_size, (void*)b, 0, NULL, NULL);
-	check_error(error, __LINE__);
-
-	size_t global[2] = { NDIM + ((4 - (NDIM % 4)) % 4), NDIM + ((4 - (NDIM % 4)) % 4) };
-	size_t local[2] = { 4, 4 };
-
-	error = clEnqueueNDRangeKernel(command_queue, kernel, 2, NULL, global, local, 0, NULL, NULL);
-	check_error(error, __LINE__);
+		// enqueue execute kernel command
+		error = clEnqueueNDRangeKernel(command_queue, kernel, 1, NULL, global, local, 0, NULL, NULL);
+		check_error(error, __LINE__);
+	}
 	error = clEnqueueReadBuffer(command_queue, buffer_c, CL_TRUE, 0, mem_size, (void*)c, 0, NULL, NULL);
 	check_error(error, __LINE__);
 
