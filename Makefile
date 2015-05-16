@@ -1,8 +1,8 @@
 TARGET=mat_mul
-OBJS=mat_mul.o timers.o
+OBJS=mat_mul.o timers.o opencl_errors.o
 
 CC=gcc
-CFLAGS=-g -O2 -Wall
+CFLAGS=-g -O4 -Wall
 LDFLAGS=-lOpenCL
 
 all: $(TARGET)
