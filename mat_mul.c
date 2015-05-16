@@ -1,38 +1,47 @@
+#include <CL/cl.h>
 #include <stdio.h>
 #include <sys/time.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include "timers.h"
+#include <string.h>
 
-#define NDIM    2048
+int NDIM = 2048;
 
-float a[NDIM][NDIM];
-float b[NDIM][NDIM];
-float c[NDIM][NDIM];
+float *a;
+float *b;
+float *c;
 
 int print_matrix = 0;
 int validation = 0;
+int is_gpu = 0;
 
-void mat_mul( float c[NDIM][NDIM], float a[NDIM][NDIM], float b[NDIM][NDIM] )
-{
-	int i, j, k;
-	
-	// C = AB
-	for( i = 0; i < NDIM; i++ )
-	{
-		for( j = 0; j < NDIM; j++ )
-		{
-			for( k = 0; k < NDIM; k++ )
-			{
-				c[i][j] += a[i][k] * b[k][j];
-			}
-		}
-	}
-}
+const char* kernel_source = "__kernel void matmul(__global const float* A, "
+                            "__global const float* B, "
+                            "__global float* C, "
+                            "int size) {"
+                            "  int i = get_global_id(0);"
+                            "  int j = get_global_id(1);"
+                            "  int k;"
+                            "  float acc = 0.0f;"
+                            "  for( k = 0; k < size; k++ ) {"
+                            "    acc += A[i * size + k] * B[k * size + j];"
+                            "  }"
+                            "  C[i * size + j] = acc;"
+                            "}";
 
 /************************** DO NOT TOUCH BELOW HERE ******************************/
 
-void check_mat_mul( float c[NDIM][NDIM], float a[NDIM][NDIM], float b[NDIM][NDIM] )
+void free_arrays() {
+	free(a);
+	a = NULL;
+	free(b);
+	b = NULL;
+	free(c);
+	c = NULL;
+}
+
+void check_mat_mul( float* c, float* a, float* b )
 {
 	int i, j, k;
 	float sum;
@@ -48,12 +57,12 @@ void check_mat_mul( float c[NDIM][NDIM], float a[NDIM][NDIM], float b[NDIM][NDIM
 			sum = 0;
 			for( k = 0; k < NDIM; k++ )
 			{
-				sum += a[i][k] * b[k][j];
+				sum += a[i * NDIM + k] * b[k * NDIM + j];
 			}
 
-			if( c[i][j] != sum )
+			if( c[i * NDIM + j] != sum )
 			{
-				printf("c[%d][%d] is differ(value=%lf correct_value=%lf)!!\n", i, j, c[i][j], sum );
+				printf("c[%d][%d] is differ(value=%lf correct_value=%lf)!!\n", i, j, c[i * NDIM + j], sum );
 				validated = 0;
 			}
 		}
@@ -66,7 +75,7 @@ void check_mat_mul( float c[NDIM][NDIM], float a[NDIM][NDIM], float b[NDIM][NDIM
 		printf("FAILED.\n");
 }
 
-void print_mat( float mat[NDIM][NDIM] )
+void print_mat( float* mat )
 {
 	int i, j;
 
@@ -74,7 +83,7 @@ void print_mat( float mat[NDIM][NDIM] )
 	{
 		for( j = 0; j < NDIM; j++ )
 		{
-			printf("%8.2lf ", mat[i][j]);
+			printf("%8.2lf ", mat[i * NDIM + j]);
 		}
 		printf("\n");
 	}
@@ -94,10 +103,19 @@ void parse_opt(int argc, char** argv)
 {
 	int opt;
 
-	while( (opt = getopt(argc, argv, "pvhikjs:")) != -1 )
+	while( (opt = getopt(argc, argv, "d:pvhikjs:")) != -1 )
 	{
 		switch(opt)
 		{
+		case 'd':
+			if(strcmp("gpu", optarg) == 0) {
+				is_gpu = 1;
+			}
+			break;
+
+		case 's':
+			NDIM = atoi(optarg);
+			break;
 		case 'p':
 			// print matrix data.
 			print_matrix = 1;
@@ -117,24 +135,101 @@ void parse_opt(int argc, char** argv)
 	}
 }
 
+void check_error(cl_int error_code) {
+	if(error_code != CL_SUCCESS) {
+		printf("Error Occured! code: %d\n", error_code);
+		free_arrays();
+		exit(1);
+	}
+}
+
 int main(int argc, char** argv)
 {
-	int i, j, k = 1;
+	int i, j;
+	long k = 1L;
 
 	parse_opt( argc, argv );
+
+	size_t mat_size = NDIM * NDIM;
+	size_t mem_size = sizeof(float) * mat_size;
+
+	a = (float *)malloc(mem_size);
+	b = (float *)malloc(mem_size);
+	c = (float *)malloc(mem_size);
 
 	for( i = 0; i < NDIM; i++ )
 	{
 		for( j = 0; j < NDIM; j++ )
 		{
-			a[i][j] = k;
-			b[i][j] = k;
+			a[i * NDIM + j] = k;
+			b[i * NDIM + j] = k;
+			c[i * NDIM + j] = k * 2;
 			k++;
 		}
 	}
 
 	timer_start(1);
-	mat_mul( c, a, b );
+
+	cl_platform_id platform;
+	cl_platform_id* platforms;
+	cl_device_id device;
+	cl_int error;
+	cl_uint platform_count;
+
+	// OpenCL 변수 정의
+	error = clGetPlatformIDs(1, &platform, NULL);
+	check_error(error);
+	clGetPlatformIDs(1, NULL, &platform_count);
+	platforms = (cl_platform_id*)malloc(sizeof(cl_platform_id) * platform_count);
+	clGetPlatformIDs(platform_count, platforms, NULL);
+	error = clGetDeviceIDs(platform, is_gpu? CL_DEVICE_TYPE_GPU : CL_DEVICE_TYPE_CPU, 1, &device, NULL);
+	check_error(error);
+
+	cl_context context = clCreateContext(0, 1, &device, NULL, NULL, &error);
+	check_error(error);
+	cl_command_queue command_queue = clCreateCommandQueue(context, device, 0, &error);
+	check_error(error);
+
+	size_t kernel_source_length = strlen(kernel_source);
+	cl_program program = clCreateProgramWithSource(context, 1, (const char**)&kernel_source, &kernel_source_length, &error);
+	check_error(error);
+
+	error = clBuildProgram(program, 1, &device, NULL, NULL, NULL);
+	check_error(error);
+	cl_kernel kernel = clCreateKernel(program, "matmul", &error);
+	check_error(error);
+
+	cl_mem buffer_a = clCreateBuffer(context, CL_MEM_READ_ONLY, mem_size, NULL, &error);
+	check_error(error);
+	cl_mem buffer_b = clCreateBuffer(context, CL_MEM_READ_ONLY, mem_size, NULL, &error);
+	check_error(error);
+	cl_mem buffer_c = clCreateBuffer(context, CL_MEM_WRITE_ONLY, mem_size, NULL, &error);
+	check_error(error);
+
+	// argument 주입
+	error = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&buffer_a);
+	check_error(error);
+	error = clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*)&buffer_b);
+	check_error(error);
+	error = clSetKernelArg(kernel, 2, sizeof(cl_mem), (void*)&buffer_c);
+	check_error(error);
+	error = clSetKernelArg(kernel, 3, sizeof(cl_int), (void*)&NDIM);
+	check_error(error);
+
+	// enqueue
+	error = clEnqueueWriteBuffer(command_queue, buffer_a, CL_FALSE, 0, mem_size, (void*)a, 0, NULL, NULL);
+	check_error(error);
+	error = clEnqueueWriteBuffer(command_queue, buffer_b, CL_FALSE, 0, mem_size, (void*)b, 0, NULL, NULL);
+	check_error(error);
+
+	size_t global[2] = { NDIM, NDIM };
+	size_t local[2] = { 4, 4 };
+
+	error = clEnqueueNDRangeKernel(command_queue, kernel, 2, NULL, global, local, 0, NULL, NULL);
+	check_error(error);
+	error = clEnqueueReadBuffer(command_queue, buffer_c, CL_TRUE, 0, mem_size, (void*)c, 0, NULL, NULL);
+	check_error(error);
+
 	timer_stop(1);
 
 	printf("Time elapsed : %lf sec\n", timer_read(1));
@@ -155,5 +250,6 @@ int main(int argc, char** argv)
 		print_mat(c);
 	}
 
+	free_arrays();
 	return 0;
 }
