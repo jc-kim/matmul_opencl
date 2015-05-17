@@ -15,7 +15,11 @@ float *c;
 
 int print_matrix = 0;
 int validation = 0;
+
+// OpenCL 관련 설정
 int is_gpu = 0;
+size_t global[1] = { 1024 };
+size_t local[1] = { 16 };
 
 const char* kernel_source = "__kernel void matmul(__global const float* A, "
                             "__global const float* B, "
@@ -24,7 +28,7 @@ const char* kernel_source = "__kernel void matmul(__global const float* A, "
                             "int start_row) {"
                             "  int i = get_global_id(0);"
                             "  int j, k;"
-                            "  int c_offset = (start_row + i) * size;"
+                            "  int c_offset = i * size;"
                             "  float acc;"
                             "  if( i + start_row >= size ) return;"
                             "  for( j = 0; j < size; j++ ) {"
@@ -105,18 +109,35 @@ void print_help(const char* prog_name)
 	printf("  -h : print this page.\n");
 }
 
+void set_opengl_setting(const char key, const char* value)
+{
+	switch(key) {
+		case 'd':
+			is_gpu = 1;
+			break;
+		case 'g':
+			global[0] = atoi(value);
+			break;
+		case 'l':
+			local[0] = atoi(value);
+			break;
+		default:
+			break;
+	}
+}
+
 void parse_opt(int argc, char** argv)
 {
 	int opt;
 
-	while( (opt = getopt(argc, argv, "d:pvhikjs:")) != -1 )
+	while( (opt = getopt(argc, argv, "d:g:l:pvhikjs:")) != -1 )
 	{
 		switch(opt)
 		{
 		case 'd':
-			if(strcmp("gpu", optarg) == 0) {
-				is_gpu = 1;
-			}
+		case 'g':
+		case 'l':
+			set_opengl_setting(opt, optarg);
 			break;
 
 		case 's':
@@ -198,11 +219,10 @@ int main(int argc, char** argv)
 	cl_kernel kernel = clCreateKernel(program, "matmul", &error); check_error(error, __LINE__);
 
 	size_t one_line_size = sizeof(float) * NDIM;
-	size_t global[1] = { 2048 };
-	size_t local[1] = { 16 };
 	cl_mem buffer_a = clCreateBuffer(context, CL_MEM_READ_ONLY, one_line_size * global[0], NULL, &error); check_error(error, __LINE__);
 	cl_mem buffer_b = clCreateBuffer(context, CL_MEM_READ_ONLY, mem_size, NULL, &error); check_error(error, __LINE__);
-	cl_mem buffer_c = clCreateBuffer(context, CL_MEM_WRITE_ONLY, mem_size, NULL, &error); check_error(error, __LINE__);
+	cl_mem buffer_c = clCreateBuffer(context, CL_MEM_WRITE_ONLY, one_line_size * global[0], NULL, &error); check_error(error, __LINE__);
+
 	int idx;
 	for( idx = 0; idx < NDIM; idx += global[0] ) {
 		int allocate_row_size = (idx + global[0]) > NDIM ? NDIM - idx : global[0];
@@ -219,8 +239,8 @@ int main(int argc, char** argv)
 
 		// enqueue execute kernel command
 		error = clEnqueueNDRangeKernel(command_queue, kernel, 1, NULL, global, local, 0, NULL, NULL); check_error(error, __LINE__);
+		error = clEnqueueReadBuffer(command_queue, buffer_c, CL_TRUE, 0, one_line_size * allocate_row_size, (void*)(c + (NDIM * idx)), 0, NULL, NULL); check_error(error, __LINE__);
 	}
-	error = clEnqueueReadBuffer(command_queue, buffer_c, CL_TRUE, 0, mem_size, c, 0, NULL, NULL); check_error(error, __LINE__);
 
 	timer_stop(1);
 
