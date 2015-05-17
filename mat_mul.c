@@ -205,8 +205,9 @@ int main(int argc, char** argv)
 	cl_mem buffer_c = clCreateBuffer(context, CL_MEM_WRITE_ONLY, mem_size, NULL, &error); check_error(error, __LINE__);
 	int idx;
 	for( idx = 0; idx < NDIM; idx += global[0] ) {
+		int allocate_row_size = (idx + global[0]) > NDIM ? NDIM - idx : global[0];
 		// enqueue buffer
-		error = clEnqueueWriteBuffer(command_queue, buffer_a, CL_FALSE, 0, one_line_size * global[0], (void*)(a + (NDIM * idx)), 0, NULL, NULL); check_error(error, __LINE__);
+		error = clEnqueueWriteBuffer(command_queue, buffer_a, CL_FALSE, 0, one_line_size * allocate_row_size, (void*)(a + (NDIM * idx)), 0, NULL, NULL); check_error(error, __LINE__);
 		error = clEnqueueWriteBuffer(command_queue, buffer_b, CL_FALSE, 0, mem_size, (void*)b, 0, NULL, NULL); check_error(error, __LINE__);
 
 		// argument 주입
